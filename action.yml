@@ -1,0 +1,96 @@
+name: Pretty Good UML diff
+description: Comment on a pull request with sequence diagrams of what the change does to the endpoints of a C# solution.
+branding:
+  icon: git-pull-request
+  color: green
+
+inputs:
+  solution:
+    description: Path to the .sln, .slnx or .csproj to analyse. Restore it before this step.
+    required: true
+  license:
+    description: Licence key. Needed for private repositories; without it the report shows the first endpoint only.
+    required: false
+    default: ''
+  base:
+    description: Branch or commit to compare with. Default is the pull request's base branch.
+    required: false
+    default: ''
+  version:
+    description: Version of the PrettyGood.Uml tool to install. Default is the latest.
+    required: false
+    default: ''
+  max-diagrams:
+    description: The most diagrams to put in one comment.
+    required: false
+    default: '10'
+  comment:
+    description: Post the report as a pull request comment ("true" or "false"). The report is always added to the run summary.
+    required: false
+    default: 'true'
+  github-token:
+    description: Token used to post the comment. It needs pull-requests write permission.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  report:
+    description: Path of the Markdown report.
+    value: ${{ steps.diff.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Pretty Good UML
+      shell: bash
+      continue-on-error: true
+      env:
+        UML_VERSION: ${{ inputs.version }}
+      run: |
+        if [ -n "$UML_VERSION" ]; then
+          dotnet tool install PrettyGood.Uml --tool-path "$RUNNER_TEMP/uml-tool" --version "$UML_VERSION"
+        else
+          dotnet tool install PrettyGood.Uml --tool-path "$RUNNER_TEMP/uml-tool"
+        fi
+
+    - name: Compare with the base branch
+      id: diff
+      shell: bash
+      continue-on-error: true
+      env:
+        UML_LICENSE: ${{ inputs.license }}
+        UML_SOLUTION: ${{ inputs.solution }}
+        UML_BASE: ${{ inputs.base }}
+        UML_BASE_REF: ${{ github.base_ref }}
+        UML_MAX_DIAGRAMS: ${{ inputs.max-diagrams }}
+      run: |
+        base="$UML_BASE"
+        if [ -z "$base" ]; then base="origin/$UML_BASE_REF"; fi
+        "$RUNNER_TEMP/uml-tool/pretty-good-uml" diff \
+          --project "$UML_SOLUTION" \
+          --base "$base" \
+          --max-diagrams "$UML_MAX_DIAGRAMS" \
+          --out "$RUNNER_TEMP/uml-report.md"
+        echo "report=$RUNNER_TEMP/uml-report.md" >> "$GITHUB_OUTPUT"
+        cat "$RUNNER_TEMP/uml-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Post or update the pull request comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && steps.diff.outcome == 'success' }}
+      continue-on-error: true
+      uses: actions/github-script@v8
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const body = fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'uml-report.md'), 'utf8');
+          const marker = '<!-- pretty-good-uml -->';
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const mine = comments.find(c => c.body && c.body.includes(marker));
+          if (mine) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }

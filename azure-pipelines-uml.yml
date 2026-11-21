@@ -1,0 +1,83 @@
+# Pretty Good UML for Azure Pipelines, when the code and pull requests are on GitHub.
+#
+# Copy these steps into the pipeline that runs on pull requests, after the steps that
+# install .NET and sign in to your private NuGet feeds (NuGetAuthenticate).
+# They need a Linux agent (bash, curl, jq) and run only for pull requests.
+#
+# Pipeline variables to add (Pipelines > Edit > Variables), marked "Keep this value secret":
+#   GITHUB_COMMENT_TOKEN  GitHub token that may comment on pull requests of this repository
+#                         (fine-grained token: Pull requests = Read and write)
+#   UML_LICENSE           your licence key. Needed for private repositories; without it the
+#                         report shows the first endpoint only.
+#
+# If your agents may not reach nuget.org, add PrettyGood.Uml to your own feed and install it from there.
+# The steps never fail the build: a problem shows as "succeeded with issues".
+# Secret variables are not given to pull requests that come from forks.
+
+variables:
+  UML_SOLUTION: MySolution.sln   # path to your .sln / .slnx
+
+steps:
+  # the full history is needed to compare with the target branch
+  - checkout: self
+    fetchDepth: 0
+
+  - bash: dotnet tool install PrettyGood.Uml --tool-path "$AGENT_TEMPDIRECTORY/uml-tool"
+    displayName: Install Pretty Good UML
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+
+  # remove this step if the pipeline has already restored the solution
+  - bash: dotnet restore "$UML_SOLUTION"
+    displayName: Restore the solution
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+
+  - bash: |
+      set -euo pipefail
+      # a variable that does not exist arrives as the literal text "$(NAME)": treat it as no licence
+      case "${UML_LICENSE:-}" in '$('*) unset UML_LICENSE ;; esac
+      target="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+      "$AGENT_TEMPDIRECTORY/uml-tool/pretty-good-uml" diff \
+        --project "$UML_SOLUTION" \
+        --base "origin/$target" \
+        --out "$AGENT_TEMPDIRECTORY/uml-report.md"
+    displayName: Compare with the target branch
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+    env:
+      UML_LICENSE: $(UML_LICENSE)
+
+  - bash: |
+      set -euo pipefail
+      report="$AGENT_TEMPDIRECTORY/uml-report.md"
+      if [ ! -f "$report" ]; then
+        echo "No report was produced; nothing to post."
+        exit 0
+      fi
+      # a variable that does not exist arrives as the literal text "$(NAME)"
+      case "${GITHUB_COMMENT_TOKEN:-}" in ''|'$('*) missing=1 ;; *) missing=0 ;; esac
+      if [ "$missing" = 1 ]; then
+        echo "##vso[task.logissue type=warning]Add the secret variable GITHUB_COMMENT_TOKEN to post the report on the pull request."
+        exit 0
+      fi
+      api="https://api.github.com/repos/$BUILD_REPOSITORY_NAME"
+      pr="$SYSTEM_PULLREQUEST_PULLREQUESTNUMBER"
+      payload="$AGENT_TEMPDIRECTORY/uml-comment.json"
+      jq -Rs '{body: .}' "$report" > "$payload"
+      # update our earlier comment if there is one, so a pull request has a single report
+      existing=`curl -fsSL -H "Authorization: Bearer $GITHUB_COMMENT_TOKEN" -H "Accept: application/vnd.github+json" \
+        "$api/issues/$pr/comments?per_page=100" \
+        | jq -r '[.[] | select(.body | contains("<!-- pretty-good-uml -->")) | .id] | first // empty'`
+      if [ -n "$existing" ]; then
+        curl -fsSL -X PATCH -H "Authorization: Bearer $GITHUB_COMMENT_TOKEN" -H "Accept: application/vnd.github+json" \
+          "$api/issues/comments/$existing" --data-binary "@$payload" > /dev/null
+      else
+        curl -fsSL -X POST -H "Authorization: Bearer $GITHUB_COMMENT_TOKEN" -H "Accept: application/vnd.github+json" \
+          "$api/issues/$pr/comments" --data-binary "@$payload" > /dev/null
+      fi
+    displayName: Post or update the pull request comment
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    continueOnError: true
+    env:
+      GITHUB_COMMENT_TOKEN: $(GITHUB_COMMENT_TOKEN)
