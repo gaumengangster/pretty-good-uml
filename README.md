@@ -194,7 +194,7 @@ the step still succeeds and the pull request stays mergeable.
 
 Your code is analysed on your own runner and is never uploaded.
 
-When a pipeline presents a licence key, the tool makes one request to `licence.nikolad.uk` with the
+When a pipeline presents a licence key, the tool makes one request to `licence.prettygooduml.com` with the
 licence id, the repository owner's name and the tool version, to check that the licence has not been
 withdrawn. If that request fails, the tool carries on. Public repositories and local runs make no request.
 
