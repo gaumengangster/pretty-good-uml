@@ -18,14 +18,14 @@ exception middleware maps exceptions to. **.NET only.**
 
 ## Example
 
-One section of the comment, from a real pull request. The handler gained two checks, and a guard
-was added to the `Ticket` entity it calls:
+One section of [a real pull request comment](https://github.com/gaumengangster/flowdesk-itsm/pull/1), exactly
+as the tool wrote it. The handler gained two checks, and a guard was added to the `Ticket` entity it calls:
 
 > ### `PATCH /api/v{version:apiVersion}/workspaces/{workspaceId}/tickets/{ticketId}/assign`
 >
-> - 🟢 New call AssignTicketCommandHandler → ApplicationDbContext: `AnyAsync`
+> - 🟢 New call AssignTicketCommandHandler → ApplicationDbContext: `WorkspaceMember.AnyAsync`
 > - 🟢 New failure `404 NotFoundException` when `!isWorkspaceMember` in AssignTicketCommandHandler
-> - 🟢 New call AssignTicketCommandHandler → ApplicationDbContext: `CountAsync`
+> - 🟢 New call AssignTicketCommandHandler → ApplicationDbContext: `Ticket.CountAsync`
 > - 🟢 New failure `409 ConflictException` when `activeTickets >= MaxActiveTicketsPerAssignee` in AssignTicketCommandHandler
 > - 🟢 New call Ticket → Ticket: `EnsureNotArchived`
 > - 🟢 New failure `409 DomainStateException` when `IsArchived` in Ticket
@@ -34,55 +34,23 @@ was added to the `Ticket` entity it calls:
 sequenceDiagram
   actor Caller as Caller
   participant P0 as TicketsController
-  participant P1 as LoggingBehaviour
-  participant P2 as ValidationBehaviour
-  participant P3 as AuthorizationBehaviour
   participant P4 as ApplicationDbContext
-  participant P5 as CurrentWorkspaceContext
-  participant P6 as PermissionBehaviour
-  participant P7 as PermissionService
   participant P8 as AssignTicketCommandHandler
   participant P9 as TicketRepository
   participant P10 as Ticket
-  participant P11 as TicketAssignActivityLogHandler
-  participant P12 as TicketActivityService
-  participant P13 as TicketAssignNotificationHandler
-  participant P14 as NotificationService
   Caller ->> P0: AssignTicketAsync()
-  P0 ->> P1: Send AssignTicketCommand
-  P1 ->> P2: next()
-  P2 ->> P2: validate TicketId NotEmpty
-  P2 ->> P2: validate WorkspaceId NotEmpty
-  P2 ->> P2: validate AssigneeId NotEmpty
-  break failures.Count != 0
-  P2 -->> Caller: 400 ValidationException
-  end
-  P2 ->> P3: next()
-  break !currentUserContext.IsAuthenticated
-  P3 -->> Caller: 401 UnauthorizedAccessException
-  end
-  P3 ->> P4: WorkspaceMember.FirstOrDefaultAsync()
-  break membership is null
-  P3 -->> Caller: 403 ForbiddenException
-  end
-  P3 ->> P5: SetWorkspaceContext()
-  P3 ->> P6: next()
-  P6 ->> P7: CanAssignAndUnAssignTickets()
-  break !allowed
-  P6 -->> Caller: 403 ForbiddenException
-  end
-  P6 ->> P8: Handle()
+  Note over P0,P10: 15 unchanged steps
   P8 ->> P9: GetByIdAsync()
   P9 ->> P4: Ticket.FirstOrDefaultAsync()
   break ticket is null
   P8 -->> Caller: 404 NotFoundException
   end
   rect rgba(46, 125, 50, 0.28)
-  P8 ->> P4: added AnyAsync()
+  P8 ->> P4: added WorkspaceMember.AnyAsync()
   break !isWorkspaceMember
   P8 -->> Caller: added 404 NotFoundException
   end
-  P8 ->> P4: added CountAsync()
+  P8 ->> P4: added Ticket.CountAsync()
   break activeTickets #gt;= MaxActiveTicketsPerAssignee
   P8 -->> Caller: added 409 ConflictException
   end
@@ -100,17 +68,19 @@ sequenceDiagram
   break assignedToUserId == Guid.Empty
   P10 -->> Caller: 409 DomainStateException
   end
+  P10 ->> P10: CalculateSlaDeadline()
+  break priority is none of the cases
+  P10 -->> Caller: 409 DomainStateException
+  end
   P10 ->> P10: RaiseDomainEvent()
-  P10 ->> P11: event TicketAssignDomainEvent
-  P11 ->> P12: LogActivityAsync()
-  P10 ->> P13: event TicketAssignDomainEvent
-  P13 ->> P14: CreateAsync()
-  P8 ->> P4: SaveChangesAsync()
-  Note over P0,P14: green = added · yellow = changed · red = removed
+  Note over P0,P10: 5 unchanged steps
+  Note over P0,P10: green = added · yellow = changed · red = removed
 ```
 
-The green bands are what the pull request added. The same pull request touched four other endpoints,
-two of them only through the shared `Ticket` entity; each gets its own section.
+The diagram shows the part of the request that changed: unchanged steps are folded into a note, and
+the green bands are what the pull request added. In the comment, the full request flow is one click
+below it. The same pull request touched four other endpoints, two of them only through the shared
+`Ticket` entity; each gets its own section.
 
 ## GitHub Actions
 
